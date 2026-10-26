@@ -39,9 +39,3 @@ npm run dist:mac    # macOS Intel + Apple Silicon DMG and ZIP
 
 Each command writes standalone artifacts and a platform-specific `release/SHA256SUMS-<platform>.txt` file. The release workflow builds on native Windows, Linux, and macOS runners and attaches artifacts for `v*` tags. Local artifacts are unsigned; platform signing and notarization are optional CI configuration for trusted distribution.
 
-## Architecture and evidence
-
-- Product requirements: [`docs/PRD.md`](docs/PRD.md)
-- Reference analysis: [`docs/research/stemkit-analysis.md`](docs/research/stemkit-analysis.md)
-- Stack decision: [`docs/architecture/stack-evaluation.md`](docs/architecture/stack-evaluation.md)
-- Execution status: [`audit/progress.md`](audit/progress.md)
