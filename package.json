@@ -1,0 +1,37 @@
+{
+  "name": "rigged-audio",
+  "version": "0.1.0",
+  "description": "Local-first desktop stem separation workspace",
+  "author": "Rigged Audio contributors",
+  "desktopName": "rigged-audio",
+  "private": true,
+  "main": "dist-electron/main/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.node.json && vite build",
+    "dev": "npm run build && electron .",
+    "start": "electron .",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win portable --x64 && node scripts/write-checksums.mjs",
+    "dist:linux": "npm run build && electron-builder --linux AppImage --x64 && node scripts/write-checksums.mjs",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64 && node scripts/write-checksums.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^6.1.2",
+    "electron-builder": "^26.18.0",
+    "electron": "^45.0.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  }
+}

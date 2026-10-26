@@ -1,0 +1,28 @@
+appId: com.riggedaudio.desktop
+productName: Rigged Audio
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**
+  - dist-electron/**
+  - "!dist-electron/**/*.test.js"
+asar: true
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.music
+  artifactName: Rigged-Audio-${version}-macOS-${arch}.${ext}
+win:
+  target:
+    - portable
+    - zip
+  artifactName: Rigged-Audio-${version}-Windows-${arch}.${ext}
+linux:
+  target:
+    - AppImage
+    - deb
+  category: AudioVideo
+  syncDesktopName: true
+  artifactName: Rigged-Audio-${version}-Linux-${arch}.${ext}
