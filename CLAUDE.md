@@ -19,7 +19,7 @@ CI runs `npm ci`, `typecheck`, `test`, `build` and the version check on Ubuntu, 
 
 ## Architecture
 
-Local-first Electron + React app that splits a song into six stems (vocals/drums/bass/guitar/piano/other) with Demucs `htdemucs_6s`, run by `python/worker.py` in its own process. Product scope is in `docs/PRD.md`; runtime design is in `docs/architecture/model-runtime.md`.
+Local-first Electron + React app that splits a song into six stems (vocals/drums/bass/guitar/piano/other) with Demucs `htdemucs_6s`, run by `python/worker.py` in its own process. Runtime design is in `docs/architecture/model-runtime.md`; user-facing docs are `docs/QUICK_START.md` (install, usage, data folder) and `docs/RELEASING.md` (installers, releases), contributor docs `CONTRIBUTING.md`. `docs/PRD.md`, `docs/implementation-plan.md`, `docs/research/` and `docs/architecture/decisions/` are local-only (git-ignored).
 
 Two separate TypeScript builds that meet only through `src/shared/types.ts`:
 

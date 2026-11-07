@@ -13,3 +13,9 @@ reference_ui/
 screenshot/
 plugin-fix-plan.md
 plugin-fix-progress.md
+
+# Internal planning and research notes (kept locally, not published)
+docs/PRD.md
+docs/implementation-plan.md
+docs/research/
+docs/architecture/decisions/
