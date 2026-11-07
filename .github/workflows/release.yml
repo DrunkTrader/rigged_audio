@@ -46,7 +46,7 @@ jobs:
             command: npm run dist:linux
           - platform: macos
             # Apple Silicon runner; builds both the arm64 and the x64 app.
-            runner: macos-14
+            runner: macos-latest
             command: npm run dist:mac
     steps:
       - uses: actions/checkout@v4
