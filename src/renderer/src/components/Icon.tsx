@@ -1,3 +1,5 @@
+import logoMark from "../../../../assets/icon-128.png";
+
 // Inline strokes, so icons follow currentColor in both themes and need no icon package.
 const PATHS = {
   play: "M8 5.6v12.8a.8.8 0 0 0 1.2.7l10.4-6.4a.8.8 0 0 0 0-1.4L9.2 4.9A.8.8 0 0 0 8 5.6z",
@@ -56,23 +58,7 @@ export function Icon({
   );
 }
 
-/** Six bars rising like a stem meter. */
+/** The emblem from assets/, at the small size the sidebar needs. */
 export function Logo(): React.ReactElement {
-  return (
-    <span className="logo" aria-hidden="true">
-      <svg viewBox="0 0 24 24" width="20" height="20">
-        {[5, 9, 4, 11, 7, 3].map((height, index) => (
-          <rect
-            key={index}
-            x={2.2 + index * 3.4}
-            y={12 - height / 2 - 1}
-            width="2"
-            height={height + 2}
-            rx="1"
-            fill="currentColor"
-          />
-        ))}
-      </svg>
-    </span>
-  );
+  return <img className="logo" src={logoMark} alt="" aria-hidden="true" />;
 }
