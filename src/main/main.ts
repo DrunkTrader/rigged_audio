@@ -108,6 +108,8 @@ function createWindow(): void {
     minWidth: 1120,
     minHeight: 720,
     backgroundColor: "#09090d",
+    // Windows and Linux taskbars; macOS takes the bundle icon instead.
+    icon: join(app.getAppPath(), "assets", "icon.png"),
     show: false,
     // The File/Edit menu bar clashed with the UI; Alt still shows it on Windows and Linux.
     autoHideMenuBar: true,

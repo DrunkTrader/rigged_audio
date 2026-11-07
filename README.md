@@ -1,8 +1,16 @@
+<p align="center">
+  <img src="assets/rigged_audio_logo_without_bg.png" alt="Rigged Audio" width="320" />
+</p>
+
 # Rigged Audio
 
 A local desktop app that splits a song into six stems (vocals, drums, bass, guitar, piano, other) with the open-source Demucs AI model, then lets you mix and export them. No account, subscription or API key.
 
 **Workflow:** import or search a song → preview → separate → mix → export.
+
+![The stem workspace in the light theme: the YouTube video synced to the mix, export options, transport with presets, and per-stem lanes](assets/screenshots/workspace-light.png)
+
+![Adding a song from YouTube in the dark theme](assets/screenshots/youtube-import-dark.png)
 
 ## Features
 

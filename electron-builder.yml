@@ -8,6 +8,8 @@ files:
   - dist-electron/**
   - "!dist-electron/**/*.test.js"
   - "!dist-electron/**/test-helper.js"
+  # Window and taskbar icon at runtime (main.ts).
+  - assets/icon.png
 extraResources:
   - from: python
     to: python
@@ -19,13 +21,17 @@ mac:
     - dmg
     - zip
   category: public.app-category.music
+  # One 1024 px PNG; electron-builder makes the .icns and .ico from it.
+  icon: assets/icon.png
   artifactName: Rigged-Audio-${version}-macOS-${arch}.${ext}
 win:
+  icon: assets/icon.png
   target:
     - portable
     - zip
   artifactName: Rigged-Audio-${version}-Windows-${arch}.${ext}
 linux:
+  icon: assets/icon.png
   target:
     - AppImage
     - deb
