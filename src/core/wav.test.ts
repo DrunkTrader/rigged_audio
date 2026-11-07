@@ -1,38 +1,58 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { encodeWav, parseWav } from "./wav";
+import { tempDirectory, wavBytes } from "./test-helper";
+import { sha256File, validateWav, wavInfo } from "./wav";
 
-describe("WAV codec", () => {
-  it("round-trips a stereo PCM timeline", () => {
-    const samples = new Float32Array([0, 0.25, -0.5, 0.75, 0.1, -0.1]);
-    const encoded = encodeWav({
-      metadata: {
-        durationSeconds: 3 / 44100,
-        sampleRate: 44100,
-        channels: 2,
-        codec: "pcm_s16le",
-        bytes: 0,
-        frames: 3,
-      },
-      samples,
-    });
-    const parsed = parseWav(encoded);
-    expect(parsed.metadata.sampleRate).toBe(44100);
-    expect(parsed.metadata.channels).toBe(2);
-    expect(parsed.metadata.frames).toBe(3);
-    expect(parsed.samples[0]).toBeCloseTo(0, 5);
-    expect(parsed.samples[1]).toBeCloseTo(0.25, 4);
-    expect(parsed.samples[2]).toBeCloseTo(-0.5, 4);
-    expect(parsed.samples[3]).toBeCloseTo(0.75, 4);
-    expect(parsed.samples[4]).toBeCloseTo(0.1, 4);
-    expect(parsed.samples[5]).toBeCloseTo(-0.1, 4);
+function file(bytes: Buffer): string {
+  const path = join(tempDirectory(), "audio.wav");
+  writeFileSync(path, bytes);
+  return path;
+}
+
+describe("wavInfo", () => {
+  it.each([
+    [{ bits: 16 }, "pcm_s16le"],
+    [{ bits: 24 }, "pcm_s24le"],
+    [{ bits: 24, format: 0xfffe }, "pcm_s24le"],
+    [{ bits: 32, format: 3 }, "pcm_f32le"],
+  ])("reads %j", (options, codec) => {
+    const info = wavInfo(file(wavBytes({ frames: 441, ...options })));
+    expect(info).toMatchObject({ codec, frames: 441, sampleRate: 44100 });
+    expect(info.durationSeconds).toBeCloseTo(0.01);
   });
 
-  it("rejects unsupported sample formats instead of guessing", () => {
-    const bytes = new Uint8Array(44);
-    bytes.set([
-      82, 73, 70, 70, 36, 0, 0, 0, 87, 65, 86, 69, 102, 109, 116, 32, 16, 0, 0,
-      0, 3, 0, 1, 0,
-    ]);
-    expect(() => parseWav(bytes)).toThrow(/WAV_INVALID/);
+  it("skips chunks before the audio data", () => {
+    expect(wavInfo(file(wavBytes({ list: true }))).frames).toBe(100);
+  });
+
+  it("rejects truncated audio instead of reporting a short file", () => {
+    const whole = wavBytes({ frames: 100 });
+    expect(() => wavInfo(file(whole.subarray(0, whole.length - 10)))).toThrow(
+      /WAV_INVALID: truncated/,
+    );
+  });
+
+  it("rejects files that are not WAV", () => {
+    expect(() => wavInfo(file(Buffer.alloc(64)))).toThrow(/WAV_INVALID/);
+  });
+});
+
+describe("validateWav", () => {
+  it("fails when a stem is one frame off the source timeline", () => {
+    const expected = wavInfo(file(wavBytes({ frames: 100 })));
+    expect(() => validateWav(file(wavBytes({ frames: 99 })), expected)).toThrow(
+      /OUTPUT_MISMATCH/,
+    );
+  });
+});
+
+describe("sha256File", () => {
+  it("hashes by streaming", async () => {
+    const path = join(tempDirectory(), "x");
+    writeFileSync(path, "abc");
+    expect(await sha256File(path)).toBe(
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    );
   });
 });

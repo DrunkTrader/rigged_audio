@@ -7,6 +7,12 @@ files:
   - dist/**
   - dist-electron/**
   - "!dist-electron/**/*.test.js"
+  - "!dist-electron/**/test-helper.js"
+extraResources:
+  - from: python
+    to: python
+    filter:
+      - "*.py"
 asar: true
 mac:
   target:

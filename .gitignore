@@ -5,4 +5,7 @@ release/
 .DS_Store
 *.log
 .rigged-audio-data/
+audit/
+graphify-out/
+__pycache__/
 *.local

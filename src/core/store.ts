@@ -9,7 +9,7 @@ import {
 import { dirname, join } from "node:path";
 import type { JobRecord, LibraryStore, ProjectRecord } from "../shared/types";
 
-const CURRENT_SCHEMA = 1;
+const CURRENT_SCHEMA = 2;
 
 function emptyStore(): LibraryStore {
   return { schemaVersion: CURRENT_SCHEMA, projects: [], jobs: [] };
@@ -24,6 +24,22 @@ function migrate(value: unknown): LibraryStore {
     Array.isArray(candidate.jobs)
   ) {
     return candidate as LibraryStore;
+  }
+  // v1 stems came from a test filter, not a model: keep the sources, drop the fake output.
+  if (
+    candidate.schemaVersion === 1 &&
+    Array.isArray(candidate.projects) &&
+    Array.isArray(candidate.jobs)
+  ) {
+    return {
+      schemaVersion: CURRENT_SCHEMA,
+      projects: candidate.projects.map((project) => ({
+        ...project,
+        stems: {},
+        jobIds: [],
+      })),
+      jobs: [],
+    };
   }
   return emptyStore();
 }
