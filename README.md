@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/rigged_audio_logo_without_bg.png" alt="Rigged Audio" width="320" />
+  <img src="assets/rigged_audio_logo_without_bg.png" alt="Rigged Audio" width="100" />
 </p>
 
 # Rigged Audio
