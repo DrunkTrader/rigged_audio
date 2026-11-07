@@ -70,8 +70,10 @@ export class DemucsEngine implements SeparationEngine {
          "--output", request.outputDirectory,
          "--rate", String(request.source.sampleRate),
          "--channels", String(request.source.channels),
-         "--frames", String(request.source.frames)],
-        { env, signal, onLine, holdStdin: true },
+         "--frames", String(request.source.frames),
+         "--parent-pid", String(process.pid)],
+        // Windows watches --parent-pid instead: a pending stdin read there can stall the worker.
+        { env, signal, onLine, holdStdin: process.platform !== "win32" },
       );
     } catch (error) {
       if (failure) throw new Error(`SEPARATION_FAILED: ${failure}`);

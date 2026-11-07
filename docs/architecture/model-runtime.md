@@ -2,7 +2,7 @@
 
 ## Engine
 
-`DemucsEngine` (`src/core/engine.ts`) implements `SeparationEngine` and runs `python/worker.py separate` as a child process, one per job. Cancel is a process kill. The worker exits on stdin EOF, so a force-killed app does not leave it running.
+`DemucsEngine` (`src/core/engine.ts`) implements `SeparationEngine` and runs `python/worker.py separate` as a child process, one per job. Cancel is a process kill. The worker exits when the app dies (stdin EOF on macOS and Linux, a wait on `--parent-pid` on Windows), so a force-killed app does not leave it running.
 
 Model: Demucs `htdemucs_6s` from `demucs==4.1.0` (MIT). It is the only maintained, permissively licensed option found that gives all six stems from one model. Its piano stem is reported as its weakest. BS-RoFormer scores higher on guitar in third-party tests, but no licence was found for a six-stem checkpoint, so it is not used. A different model only needs a new engine and worker command.
 

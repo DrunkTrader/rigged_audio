@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { YouTubeProgress, YouTubeResult } from "../../../shared/types";
 import { errorText, formatTime } from "../format";
+import { Icon } from "./Icon";
 
 const CONSENT_KEY = "rigged.youtube.consent";
 const MAX_SECONDS = 20 * 60;
@@ -38,6 +39,9 @@ function FileSource({
         if (file) onImport(window.riggedAudio.pathForFile(file));
       }}
     >
+      <span className="drop-icon" aria-hidden="true">
+        <Icon name="upload" size={26} />
+      </span>
       <h2>Drop a song here</h2>
       <p className="muted">
         MP3, WAV, FLAC, M4A, OGG and more, up to 20 minutes.
@@ -100,7 +104,7 @@ function YouTubeSource({
     if (!text) return;
     if (/^https?:\/\//i.test(text)) {
       if (consented) await fetchVideo(text);
-      else setError("Confirm the notice below to download this video.");
+      else setError("Confirm the notice below to use this video.");
       return;
     }
     setError(null);
@@ -135,6 +139,7 @@ function YouTubeSource({
           void submit();
         }}
       >
+        <Icon name="search" />
         <input
           type="search"
           value={query}
@@ -231,7 +236,11 @@ export function SourcePanel({
   const [tab, setTab] = useState<"file" | "youtube">("file");
   return (
     <div className="source-panel">
-      <h1>Split a song into stems</h1>
+      <h1>Split any song into stems</h1>
+      <p className="lede">
+        Vocals, drums, bass, guitar, piano and the rest, separated on this
+        computer.
+      </p>
       <div className="tabs" role="tablist">
         {(["file", "youtube"] as const).map((id) => (
           <button

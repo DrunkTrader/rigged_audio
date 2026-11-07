@@ -22,7 +22,7 @@ flowchart LR
   Engine --> Worker
   Worker --> Models
   Core --> Media
-  Media -->|stems and video, with Range| UI
+  Media -->|stems, with Range| UI
   Bridge --> UI
 ```
 

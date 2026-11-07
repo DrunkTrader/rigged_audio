@@ -41,6 +41,7 @@ const api: RiggedAudioApi = {
   importYouTube: (urlOrId) => ipcRenderer.invoke("youtube:import", urlOrId),
   cancelYouTube: () => ipcRenderer.invoke("youtube:cancel"),
   updateYouTubeSupport: () => ipcRenderer.invoke("youtube:update"),
+  setTheme: (theme) => ipcRenderer.invoke("theme:set", theme),
   onJobEvent: (callback) => subscribe<JobEvent>("job:event", callback),
   onSetupEvent: (callback) => subscribe<SetupEvent>("setup:event", callback),
   onYouTubeProgress: (callback) =>

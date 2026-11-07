@@ -9,3 +9,7 @@ audit/
 graphify-out/
 __pycache__/
 *.local
+reference_ui/
+screenshot/
+plugin-fix-plan.md
+plugin-fix-progress.md

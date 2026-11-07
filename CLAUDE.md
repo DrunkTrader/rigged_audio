@@ -38,7 +38,7 @@ Flow of a call: `App.tsx` → `window.riggedAudio.*` (defined in `src/preload/pr
 
 Media reaches the renderer through the `rigged-media://media/<projectId>/<kind>` protocol in `main.ts` (with Range support), resolved by `service.mediaPath`. Stems never cross IPC.
 
-Renderer audio: `renderer/src/audio/mixer.ts` (`StemMixer`) decodes the stem WAVs into Web Audio buffers and plays all stems from one shared clock; video is slaved to that clock by `syncVideo`. `App.tsx` drives it and persists mix changes through `updateMix`. `shared/mix.ts` defines presets and `laneGain`, used by both playback and export so a mix exports as it sounds.
+Renderer audio: `renderer/src/audio/mixer.ts` (`StemMixer`) decodes the stem WAVs into Web Audio buffers and plays all stems from one shared clock; the YouTube player is slaved to that clock by `syncVideo`. `App.tsx` drives it and persists mix changes through `updateMix`. `shared/mix.ts` defines presets and `laneGain`, used by both playback and export so a mix exports as it sounds.
 
 ## Conventions worth knowing
 
@@ -50,4 +50,6 @@ Renderer audio: `renderer/src/audio/mixer.ts` (`StemMixer`) decodes the stem WAV
 - Do not import `demucs.api`: it needs `sphn`, which has no Intel macOS or Linux arm64 wheels. Setup excludes `sphn` and the worker uses `demucs.pretrained`/`demucs.apply` with ffmpeg for I/O.
 - Stems must match the source frame count exactly. In ffmpeg, keep the resample inside `-af`: a separate `-ar` runs after the filter chain, so `atrim` would count at the wrong rate.
 - yt-dlp's `--print` implies quiet mode; `--progress` is required to keep progress lines.
-- The worker exits on stdin EOF, so a force-killed app does not leave inference running. Keep `holdStdin` on that spawn.
+- The worker exits when the app dies, so a force-killed app does not leave inference running: on stdin EOF on macOS/Linux (keep `holdStdin` there), and by waiting on `--parent-pid` on Windows, where a thread blocked reading a pipe stalled jobs at 1%.
+- YouTube video is never downloaded. `audio/youtube.ts` drives YouTube's embed over postMessage (no YouTube script in the page) and `syncVideo` slaves it to the mix clock. Embeds need the Referer header that `identifyEmbeds` in `main.ts` adds; without it YouTube shows error 153.
+- Theme tokens live at the top of `styles.css` (`:root` dark, `[data-theme="light"]`); stem colours per theme are in `STEM_META` in `format.ts`.

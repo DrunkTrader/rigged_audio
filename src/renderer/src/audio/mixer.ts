@@ -167,8 +167,9 @@ export function syncVideo(
   video: Pick<HTMLVideoElement, "currentTime" | "paused" | "play" | "pause">,
   position: number,
   playing: boolean,
+  tolerance = VIDEO_TOLERANCE_SECONDS,
 ): void {
-  if (Math.abs(video.currentTime - position) > VIDEO_TOLERANCE_SECONDS)
+  if (Math.abs(video.currentTime - position) > tolerance)
     video.currentTime = position;
   if (playing && video.paused) void video.play();
   if (!playing && !video.paused) video.pause();

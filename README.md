@@ -10,7 +10,8 @@ A local desktop app that splits a song into six stems (vocals, drums, bass, guit
 - Real separation with Demucs `htdemucs_6s`, on NVIDIA, AMD (Linux) or Apple GPUs where available, otherwise CPU
 - Progress, cancellation, and restart recovery; inference runs in its own process
 - Six-lane mixer: waveforms, click or drag to seek, mute, solo, per-stem play, volume, master
-- All stems share one audio clock, so they cannot drift; video follows that clock
+- All stems share one audio clock, so they cannot drift; the YouTube video follows that clock
+- Dark and light themes
 - Presets: All Stems, Karaoke, Acapella, Drums + Bass
 - Export single stems, all stems, or the current mix as 16-bit, 24-bit or 32-bit float WAV, at the original rate, 44.1 kHz or 48 kHz
 - Optional YouTube search and download (see below)
@@ -33,7 +34,7 @@ Search and download use [yt-dlp](https://github.com/yt-dlp/yt-dlp). This is the 
 
 - **Terms.** YouTube's Terms of Service restrict downloading without permission. The feature is opt-in behind a notice. Use it only for content you own or have rights to. You are responsible for your use. If you plan to distribute this app publicly, get legal advice about this feature first.
 - **Reliability.** YouTube can refuse connections, especially from cloud and VPN addresses, and it changes often. The app explains a refusal and offers "Update YouTube support", which updates yt-dlp only.
-- **Preview.** The video preview is a local 480p copy rather than YouTube's embedded player, which requires an HTTP referrer that a local app does not send.
+- **Video.** Only the best audio stream is downloaded. The video plays in YouTube's own embedded player, muted and kept in time with the stem mix. YouTube rejects embeds that send no HTTP referrer (error 153), so the app identifies itself as `https://com.riggedaudio.desktop/` on embed requests only.
 - The official YouTube Data API is not used: it needs a key, and its policies restrict separating audio from video.
 
 ## Requirements

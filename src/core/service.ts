@@ -9,7 +9,6 @@ import {
   sep,
 } from "node:path";
 import {
-  copyFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -39,11 +38,10 @@ const MAX_SOURCE_BYTES = 2 * 1024 ** 3;
 const MAX_DURATION_SECONDS = 20 * 60;
 const ACTIVE_STATES = ["queued", "preparing", "separating", "validating"];
 
-export type MediaKind = StemId | "source" | "video";
+export type MediaKind = StemId | "source";
 
 export interface ImportExtras {
   title?: string;
-  videoPath?: string;
   sourceUrl?: string;
   signal?: AbortSignal;
 }
@@ -182,11 +180,6 @@ export class RiggedAudioService {
       rmSync(directory, { recursive: true, force: true });
       throw error;
     }
-    let videoPath: string | undefined;
-    if (extras.videoPath) {
-      videoPath = join(directory, "source", "video.mp4");
-      copyFileSync(extras.videoPath, videoPath);
-    }
     const now = new Date().toISOString();
     const project: ProjectRecord = {
       id,
@@ -200,7 +193,6 @@ export class RiggedAudioService {
       jobIds: [],
       stems: {},
       mix: { master: 0.86, lanes: {} },
-      videoPath,
       sourceUrl: extras.sourceUrl,
     };
     this.store.update((current) => ({
@@ -304,9 +296,7 @@ export class RiggedAudioService {
     const candidate =
       kind === "source"
         ? project.sourcePath
-        : kind === "video"
-          ? project.videoPath
-          : project.stems[kind as StemId]?.path;
+        : project.stems[kind as StemId]?.path;
     if (!candidate) throw new Error("OUTPUT_MISSING: media is not available");
     return this.ownedPath(project.id, candidate);
   }
@@ -443,6 +433,8 @@ export class RiggedAudioService {
         state: "preparing",
         phase: "prepare",
         progress: 1,
+        // Stored too, or a list refresh shows the queued message on a running job.
+        message: "Starting the separation engine",
         startedAt: new Date().toISOString(),
       });
       this.emit({
@@ -452,7 +444,7 @@ export class RiggedAudioService {
           state: "preparing",
           phase: "prepare",
           progress: 1,
-          message: "Preparing a private job workspace",
+          message: "Starting the separation engine",
         },
       });
       rmSync(temporary, { recursive: true, force: true });
@@ -493,6 +485,7 @@ export class RiggedAudioService {
         state: "validating",
         phase: "validation",
         progress: 98,
+        message: "Checking the stems",
       });
       mkdirSync(join(this.projectDirectory(project.id), "artifacts"), {
         recursive: true,

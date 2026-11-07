@@ -303,6 +303,7 @@ describe("media paths", () => {
     expect(() => service.mediaPath(project.id, "video")).toThrow(
       /OUTPUT_MISSING/,
     );
+    expect(service.listJobs()[0].message).not.toMatch(/Waiting/);
     expect(() => service.mediaPath("../../etc", "source")).toThrow(/INVALID/);
   });
 
