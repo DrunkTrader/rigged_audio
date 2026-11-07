@@ -1,786 +1,599 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { StemMixer } from "./audio/mixer";
+import { StemMixer, syncVideo } from "./audio/mixer";
+import { ExportPanel } from "./components/ExportPanel";
+import { SetupScreen } from "./components/SetupScreen";
+import { SourcePanel } from "./components/SourcePanel";
+import { Waveform } from "./components/Waveform";
+import { errorText, formatTime, mediaUrl, STEM_META } from "./format";
+import {
+  activePreset,
+  applyPreset,
+  PRESETS,
+  type Mix,
+  type PresetId,
+} from "../../shared/mix";
 import {
   STEMS,
-  type JobEvent,
-  type JobState,
+  type JobRecord,
   type MixLane,
   type ProjectRecord,
+  type RuntimeStatus,
   type StemId,
 } from "../../shared/types";
 
-const STEM_META: Record<
-  StemId,
-  { label: string; color: string; note: string }
-> = {
-  vocals: { label: "Vocals", color: "#ff9b71", note: "center focus" },
-  drums: { label: "Drums", color: "#f5c56b", note: "transients" },
-  bass: { label: "Bass", color: "#8bd3c7", note: "low register" },
-  other: { label: "Other", color: "#a88bff", note: "accompaniment" },
-};
-
-const DEFAULT_MIX: ProjectRecord["mix"] = {
-  master: 0.86,
-  lanes: Object.fromEntries(
-    STEMS.map((id) => [id, { volume: 1, muted: false, solo: false }]),
-  ),
-};
-
-function formatTime(seconds: number): string {
-  const safe = Math.max(0, Math.floor(seconds));
-  return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, "0")}`;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
+const ACTIVE = ["queued", "preparing", "separating", "validating"];
+const SAVE_DELAY_MS = 300;
 
 function laneFor(project: ProjectRecord, id: StemId): MixLane {
-  return project.mix.lanes[id] ?? DEFAULT_MIX.lanes[id]!;
+  return project.mix.lanes[id] ?? { volume: 1, muted: false, solo: false };
 }
 
-function latestState(
-  project: ProjectRecord,
-  events: Record<string, JobEvent>,
-): { state: JobState | "idle"; progress: number; message: string } {
-  const latest = [...project.jobIds]
-    .reverse()
-    .map((id) => events[id])
-    .find(Boolean);
-  if (!latest)
-    return {
-      state: project.stems.vocals ? "complete" : "idle",
-      progress: project.stems.vocals ? 100 : 0,
-      message: "",
-    };
-  if (latest.kind === "progress")
-    return {
-      state: latest.data.state,
-      progress: latest.data.progress,
-      message: latest.data.message,
-    };
-  if (latest.kind === "complete")
-    return {
-      state: "complete",
-      progress: 100,
-      message: "Preview stems are ready",
-    };
-  return { state: "failed", progress: 0, message: latest.data.error.message };
+function isSeparated(project: ProjectRecord): boolean {
+  return STEMS.every((id) => project.stems[id]?.valid);
 }
 
-function Waveform({
-  buffer,
-  color,
-  position,
-  onSeek,
-}: {
-  buffer?: AudioBuffer;
-  color: string;
-  position: number;
-  onSeek: (value: number) => void;
-}): React.ReactElement {
-  const bars = useMemo(() => {
-    if (!buffer) return Array.from({ length: 72 }, () => 0.18);
-    const data = buffer.getChannelData(0);
-    return Array.from({ length: 72 }, (_, index) => {
-      const start = Math.floor((index / 72) * data.length);
-      const end = Math.max(
-        start + 1,
-        Math.floor(((index + 1) / 72) * data.length),
-      );
-      let peak = 0;
-      for (
-        let cursor = start;
-        cursor < end;
-        cursor += Math.max(1, Math.floor((end - start) / 30))
-      )
-        peak = Math.max(peak, Math.abs(data[cursor]));
-      return Math.max(0.12, Math.min(1, peak * 1.6));
-    });
-  }, [buffer]);
-  const fraction = buffer?.duration
-    ? Math.min(1, position / buffer.duration)
-    : 0;
-  return (
-    <button
-      type="button"
-      className="waveform"
-      aria-label="Seek in stem waveform"
-      onClick={(event) => {
-        const rect = event.currentTarget.getBoundingClientRect();
-        onSeek(
-          ((event.clientX - rect.left) / rect.width) * (buffer?.duration ?? 0),
-        );
-      }}
-    >
-      {bars.map((height, index) => (
-        <span
-          key={index}
-          style={{
-            height: `${height * 100}%`,
-            background: color,
-            opacity: index / 72 < fraction ? 0.95 : 0.28,
-          }}
-        />
-      ))}
-      <i style={{ left: `${fraction * 100}%` }} />
-    </button>
-  );
-}
-
-function ImportPanel({
-  onImport,
-  disabled,
-}: {
-  onImport: (path: string) => void;
-  disabled: boolean;
-}): React.ReactElement {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [dragging, setDragging] = useState(false);
-  const choose = (): void => inputRef.current?.click();
-  return (
-    <section
-      className={`import-panel ${dragging ? "is-dragging" : ""}`}
-      onDragEnter={(event) => {
-        event.preventDefault();
-        setDragging(true);
-      }}
-      onDragOver={(event) => event.preventDefault()}
-      onDragLeave={() => setDragging(false)}
-      onDrop={(event) => {
-        event.preventDefault();
-        setDragging(false);
-        const file = event.dataTransfer.files[0];
-        if (file) onImport(window.riggedAudio.pathForFile(file));
-      }}
-    >
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".wav,audio/wav"
-        hidden
-        onChange={(event) => {
-          const file = event.target.files?.[0];
-          if (file) onImport(window.riggedAudio.pathForFile(file));
-          event.currentTarget.value = "";
-        }}
-      />
-      <div className="import-orbit" aria-hidden="true">
-        <span>+</span>
-      </div>
-      <div>
-        <p className="eyebrow">Local source / PCM WAV</p>
-        <h2>Bring a track into focus.</h2>
-        <p className="muted">
-          Drop a WAV here or inspect one from disk. Your original stays
-          untouched.
-        </p>
-      </div>
-      <button
-        className="button primary"
-        type="button"
-        onClick={choose}
-        disabled={disabled}
-      >
-        Choose audio <span aria-hidden="true">↗</span>
-      </button>
-      <p className="drop-hint">
-        Private by default · no upload · 512 MB MVP limit
-      </p>
-    </section>
-  );
-}
-
-function StatusPill({
-  state,
-}: {
-  state: JobState | "idle";
-}): React.ReactElement {
-  const label =
-    state === "complete"
-      ? "Ready to play"
-      : state === "idle"
-        ? "Not split"
-        : state === "failed"
-          ? "Needs attention"
-          : state;
-  return (
-    <span className={`status-pill ${state}`}>
-      <span className="status-dot" />
-      {label}
-    </span>
-  );
+function soloMix(mix: Mix, id: StemId): Mix {
+  return {
+    ...mix,
+    lanes: Object.fromEntries(
+      STEMS.map((stem) => [
+        stem,
+        {
+          volume: mix.lanes[stem]?.volume ?? 1,
+          muted: stem !== id,
+          solo: false,
+        },
+      ]),
+    ),
+  };
 }
 
 function StemLane({
   id,
-  project,
+  index,
+  lane,
   buffer,
   position,
+  duration,
+  auditioning,
   onSeek,
   onChange,
-  onSolo,
-  onMute,
+  onAudition,
 }: {
   id: StemId;
-  project: ProjectRecord;
+  index: number;
+  lane: MixLane;
   buffer?: AudioBuffer;
   position: number;
-  onSeek: (value: number) => void;
+  duration: number;
+  auditioning: boolean;
+  onSeek: (seconds: number) => void;
   onChange: (lane: MixLane) => void;
-  onSolo: () => void;
-  onMute: () => void;
+  onAudition: () => void;
 }): React.ReactElement {
   const meta = STEM_META[id];
-  const lane = laneFor(project, id);
   return (
-    <article className={`stem-lane ${lane.muted ? "muted" : ""}`}>
-      <div className="stem-heading">
-        <span className="stem-swatch" style={{ background: meta.color }} />
-        <div>
-          <strong>{meta.label}</strong>
-          <small>{meta.note}</small>
-        </div>
+    <article className={`lane ${lane.muted ? "muted" : ""}`}>
+      <div className="lane-head">
+        <span style={{ background: meta.color }} aria-hidden="true" />
+        <strong>{meta.label}</strong>
+        <kbd title={`Press ${index + 1} to mute`}>{index + 1}</kbd>
       </div>
       <Waveform
+        label={meta.label}
         buffer={buffer}
         color={meta.color}
         position={position}
+        duration={duration}
         onSeek={onSeek}
       />
-      <output className="volume-readout" aria-label={`${meta.label} volume`}>
-        {Math.round(lane.volume * 100)}%
-      </output>
-      <input
-        className="volume-slider"
-        aria-label={`${meta.label} volume`}
-        type="range"
-        min="0"
-        max="1"
-        step="0.01"
-        value={lane.volume}
-        onChange={(event) =>
-          onChange({ ...lane, volume: Number(event.target.value) })
-        }
-      />
-      <button
-        className={`lane-action ${lane.muted ? "active" : ""}`}
-        type="button"
-        aria-pressed={lane.muted}
-        onClick={onMute}
-      >
-        M
-      </button>
-      <button
-        className={`lane-action ${lane.solo ? "active solo" : ""}`}
-        type="button"
-        aria-pressed={lane.solo}
-        onClick={onSolo}
-      >
-        S
-      </button>
+      <div className="lane-controls">
+        <button
+          type="button"
+          className={auditioning ? "active" : ""}
+          aria-label={`${auditioning ? "Pause" : "Play"} ${meta.label} only`}
+          aria-pressed={auditioning}
+          onClick={onAudition}
+        >
+          {auditioning ? "❚❚" : "▶"}
+        </button>
+        <button
+          type="button"
+          className={lane.muted ? "active" : ""}
+          aria-label={`Mute ${meta.label}`}
+          aria-pressed={lane.muted}
+          onClick={() => onChange({ ...lane, muted: !lane.muted })}
+        >
+          M
+        </button>
+        <button
+          type="button"
+          className={lane.solo ? "active solo" : ""}
+          aria-label={`Solo ${meta.label}`}
+          aria-pressed={lane.solo}
+          onClick={() => onChange({ ...lane, solo: !lane.solo })}
+        >
+          S
+        </button>
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          value={lane.volume}
+          aria-label={`${meta.label} volume`}
+          onChange={(event) =>
+            onChange({ ...lane, volume: Number(event.target.value) })
+          }
+        />
+      </div>
     </article>
   );
 }
 
+function Separate({
+  project,
+  job,
+  onStart,
+}: {
+  project: ProjectRecord;
+  job?: JobRecord;
+  onStart: () => void;
+}): React.ReactElement {
+  const running = job && ACTIVE.includes(job.state);
+  const failed =
+    job && ["failed", "interrupted"].includes(job.state) ? job : null;
+  return (
+    <section className="separate">
+      {project.videoPath ? (
+        <video src={mediaUrl(project.id, "video")} controls />
+      ) : (
+        <audio src={mediaUrl(project.id, "source")} controls />
+      )}
+      {failed && (
+        <p className="alert" role="alert">
+          {failed.error?.message ?? "Separation did not finish."}
+        </p>
+      )}
+      {running ? (
+        <div className="progress" role="status">
+          <div style={{ width: `${job.progress}%` }} />
+          <span>{job.message ?? "Starting"}</span>
+          <b>{job.progress}%</b>
+          <button
+            className="button ghost"
+            type="button"
+            onClick={() => void window.riggedAudio.cancelJob(job.id)}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button className="button primary" type="button" onClick={onStart}>
+          {failed ? "Try again" : "Separate stems"}
+        </button>
+      )}
+    </section>
+  );
+}
+
 export function App(): React.ReactElement {
+  const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [events, setEvents] = useState<Record<string, JobEvent>>({});
   const [buffers, setBuffers] = useState<Partial<Record<StemId, AudioBuffer>>>(
     {},
   );
   const [position, setPosition] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [loadingAudio, setLoadingAudio] = useState(false);
+  const [audition, setAudition] = useState<StemId | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mixer = useRef(new StemMixer());
+  const video = useRef<HTMLVideoElement>(null);
+  const liveMix = useRef<Mix | null>(null);
+  const saveTimer = useRef<number>();
+  const pendingSave = useRef<(() => Promise<unknown>) | null>(null);
 
   const active = projects.find((project) => project.id === activeId) ?? null;
-  const status = active
-    ? latestState(active, events)
-    : { state: "idle" as const, progress: 0, message: "" };
+  const separated = active ? isSeparated(active) : false;
+  const duration = active?.source.durationSeconds ?? 0;
+  const job = useMemo(() => {
+    const id = active?.jobIds[active.jobIds.length - 1];
+    return jobs.find((item) => item.id === id);
+  }, [active, jobs]);
 
   const refresh = useCallback(async () => {
-    const next = await window.riggedAudio.listProjects();
-    setProjects(next);
-    setActiveId((current) =>
-      current && next.some((project) => project.id === current)
-        ? current
-        : (next[0]?.id ?? null),
-    );
+    const [nextProjects, nextJobs] = await Promise.all([
+      window.riggedAudio.listProjects(),
+      window.riggedAudio.listJobs(),
+    ]);
+    setProjects(nextProjects);
+    setJobs(nextJobs);
+  }, []);
+
+  const checkRuntime = useCallback(async () => {
+    setRuntime(await window.riggedAudio.runtimeStatus());
   }, []);
 
   useEffect(() => {
-    void refresh().catch((reason) =>
-      setError(reason instanceof Error ? reason.message : String(reason)),
-    );
+    void checkRuntime();
+    void refresh().catch((reason) => setError(errorText(reason)));
     return window.riggedAudio.onJobEvent((event) => {
-      setEvents((current) => ({
-        ...current,
-        [event.kind === "progress" ? event.data.jobId : event.data.jobId]:
-          event,
-      }));
-      if (event.kind === "complete" || event.kind === "failed") void refresh();
+      if (event.kind === "progress") {
+        const { jobId, ...patch } = event.data;
+        setJobs((current) =>
+          current.map((item) =>
+            item.id === jobId ? { ...item, ...patch } : item,
+          ),
+        );
+      } else void refresh();
     });
-  }, [refresh]);
+  }, [checkRuntime, refresh]);
 
+  // Audio is the master clock; the video and playhead only read from it.
   useEffect(() => {
-    const timer = window.setInterval(
-      () => setPosition(mixer.current.position()),
-      80,
-    );
-    return () => window.clearInterval(timer);
+    let frame = 0;
+    let shown = 0;
+    const tick = (): void => {
+      if (mixer.current.stopIfEnded()) {
+        setPlaying(false);
+        setAudition(null);
+      }
+      const now = mixer.current.position();
+      // The UI only needs about 20 updates a second; video sync below runs every frame.
+      if (Math.abs(now - shown) >= 0.05 || !mixer.current.isPlaying()) {
+        shown = now;
+        setPosition(now);
+      }
+      if (video.current)
+        syncVideo(video.current, now, mixer.current.isPlaying());
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
   }, []);
 
   useEffect(() => {
-    if (!active || !active.stems.vocals || status.state !== "complete") {
+    setBuffers({});
+    setPlaying(false);
+    setAudition(null);
+    setPosition(0);
+    if (!active || !separated) {
       mixer.current.dispose();
-      setBuffers({});
-      setPlaying(false);
-      setPosition(0);
       return;
     }
-    let disposed = false;
-    setLoadingAudio(true);
-    void window.riggedAudio
-      .readStems(active.id)
-      .then(async (payload) => {
-        if (disposed) return;
-        const decoded = await mixer.current.load(payload);
-        mixer.current.applyMix(active.mix);
-        if (!disposed) {
-          setLoadingAudio(false);
-          setBuffers(decoded);
-        }
+    let stale = false;
+    setLoading(true);
+    const urls = Object.fromEntries(
+      STEMS.map((id) => [id, mediaUrl(active.id, id)]),
+    );
+    mixer.current
+      .load(urls)
+      .then((decoded) => {
+        if (stale) return;
+        // Not active.mix: the user may have changed lanes while stems decoded.
+        if (liveMix.current) mixer.current.applyMix(liveMix.current);
+        setBuffers(decoded);
       })
       .catch((reason) => {
-        if (!disposed) {
-          setLoadingAudio(false);
-          setError(reason instanceof Error ? reason.message : String(reason));
-        }
+        if (!stale) setError(errorText(reason));
+      })
+      .finally(() => {
+        if (!stale) setLoading(false);
       });
     return () => {
-      disposed = true;
+      stale = true;
     };
-  }, [active?.id, active?.stems.vocals, status.state]);
+    // Reload only when the project or its stems change, not on every mix edit.
+  }, [active?.id, separated]);
 
-  const updateProject = (next: ProjectRecord): void =>
-    setProjects((current) =>
-      current.map((project) => (project.id === next.id ? next : project)),
-    );
-  const importPath = async (path: string): Promise<void> => {
-    if (!path) return;
-    setError(null);
-    try {
-      const project = await window.riggedAudio.importAudio(path);
-      updateProject(project);
-      setProjects((current) =>
-        current.some((item) => item.id === project.id)
-          ? current
-          : [project, ...current],
-      );
-      setActiveId(project.id);
-      const job = await window.riggedAudio.startSeparation(project.id);
-      setEvents((current) => ({
-        ...current,
-        [job.jobId]: {
-          kind: "progress",
-          data: {
-            jobId: job.jobId,
-            state: "queued",
-            phase: "queue",
-            progress: 0,
-            message: "Queued for preview separation",
-          },
-        },
-      }));
-      await refresh();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    }
-  };
-
-  const splitAgain = async (): Promise<void> => {
+  useEffect(() => {
     if (!active) return;
-    setError(null);
-    try {
-      const job = await window.riggedAudio.startSeparation(active.id);
-      setEvents((current) => ({
-        ...current,
-        [job.jobId]: {
-          kind: "progress",
-          data: {
-            jobId: job.jobId,
-            state: "queued",
-            phase: "queue",
-            progress: 0,
-            message: "Queued for preview separation",
-          },
-        },
-      }));
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    }
+    liveMix.current = audition ? soloMix(active.mix, audition) : active.mix;
+    mixer.current.applyMix(liveMix.current);
+  }, [active?.mix, audition]);
+
+  const flushSave = useCallback(async () => {
+    window.clearTimeout(saveTimer.current);
+    const save = pendingSave.current;
+    pendingSave.current = null;
+    await save?.();
+  }, []);
+
+  const setMix = (mix: Mix): void => {
+    if (!active) return;
+    const { id } = active;
+    setProjects((current) =>
+      current.map((item) => (item.id === id ? { ...item, mix } : item)),
+    );
+    pendingSave.current = () => window.riggedAudio.updateMix(id, mix);
+    window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      flushSave().catch(() =>
+        setError("Your mix could not be saved, but it is still playing."),
+      );
+    }, SAVE_DELAY_MS);
   };
 
   const setLane = (id: StemId, lane: MixLane): void => {
-    if (!active) return;
-    const next = {
-      ...active,
-      mix: { ...active.mix, lanes: { ...active.mix.lanes, [id]: lane } },
-    };
-    updateProject(next);
-    mixer.current.applyMix(next.mix);
-    void window.riggedAudio
-      .updateMix(active.id, next.mix)
-      .catch(() =>
-        setError("Mix could not be saved; the live mix is still active."),
-      );
+    if (active)
+      setMix({ ...active.mix, lanes: { ...active.mix.lanes, [id]: lane } });
   };
 
-  const togglePlay = (): void => {
-    if (!mixer.current.isLoaded()) return;
-    if (playing) {
-      mixer.current.pause(position);
+  const importPath = async (path: string): Promise<void> => {
+    setError(null);
+    setImporting(true);
+    try {
+      const project = await window.riggedAudio.importAudio(path);
+      await refresh();
+      setActiveId(project.id);
+    } catch (reason) {
+      setError(errorText(reason));
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const separate = async (): Promise<void> => {
+    if (!active) return;
+    setError(null);
+    try {
+      await window.riggedAudio.startSeparation(active.id);
+      await refresh();
+    } catch (reason) {
+      setError(errorText(reason));
+    }
+  };
+
+  const togglePlay = useCallback((): void => {
+    setAudition(null);
+    if (mixer.current.isPlaying()) {
+      mixer.current.pause();
       setPlaying(false);
-    } else {
-      mixer.current.play(position);
+    } else if (mixer.current.isLoaded()) {
+      mixer.current.play();
+      setPlaying(true);
+    }
+  }, []);
+
+  const toggleAudition = (id: StemId): void => {
+    if (audition === id) {
+      mixer.current.pause();
+      setPlaying(false);
+      setAudition(null);
+      return;
+    }
+    setAudition(id);
+    if (!mixer.current.isPlaying()) {
+      mixer.current.play();
       setPlaying(true);
     }
   };
 
-  const seek = (value: number): void => {
-    mixer.current.seek(value);
-    setPosition(value);
-  };
+  const seek = useCallback((seconds: number): void => {
+    mixer.current.seek(seconds);
+    setPosition(mixer.current.position());
+  }, []);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      const target = event.target as HTMLElement;
+      if (["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) return;
+      if (!active || !separated) return;
+      if (event.key === " " && target.tagName !== "BUTTON") {
+        event.preventDefault();
+        togglePlay();
+      } else if (event.key === "ArrowLeft") seek(mixer.current.position() - 5);
+      else if (event.key === "ArrowRight") seek(mixer.current.position() + 5);
+      else if (/^[1-6]$/.test(event.key)) {
+        const id = STEMS[Number(event.key) - 1];
+        const lane = laneFor(active, id);
+        setLane(id, { ...lane, muted: !lane.muted });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  if (!runtime) return <div className="app-shell loading" />;
+  if (!runtime.ready)
+    return <SetupScreen status={runtime} onReady={() => void checkRuntime()} />;
+
+  const preset = active ? activePreset(active.mix) : null;
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark">R</span>
-          <div>
-            <strong>Rigged</strong>
-            <small>audio workspace</small>
-          </div>
+          <span className="brand-mark" aria-hidden="true">
+            R
+          </span>
+          <strong>Rigged Audio</strong>
         </div>
-        <div className="sidebar-section">
-          <p className="eyebrow">Library</p>
-          <button className="nav-item active" type="button">
-            <span>◈</span> Sessions <b>{projects.length}</b>
-          </button>
-        </div>
-        <div className="project-list" aria-label="Project library">
+        <button
+          className="button primary new-song"
+          type="button"
+          onClick={() => setActiveId(null)}
+        >
+          New song
+        </button>
+        <nav className="library" aria-label="Library">
           {projects.map((project) => (
             <button
               key={project.id}
-              className={`project-item ${activeId === project.id ? "selected" : ""}`}
               type="button"
+              className={activeId === project.id ? "selected" : ""}
+              aria-current={activeId === project.id ? "true" : undefined}
               onClick={() => setActiveId(project.id)}
             >
-              <span
-                className="project-art"
-                style={{
-                  background: `linear-gradient(135deg, ${STEM_META.vocals.color}, ${STEM_META.other.color})`,
-                }}
-              />
-              <span>
-                <strong>{project.title}</strong>
-                <small>
-                  {formatTime(project.source.durationSeconds)} ·{" "}
-                  {project.source.codec}
-                </small>
-              </span>
+              <strong>{project.title}</strong>
+              <small>
+                {formatTime(project.source.durationSeconds)}
+                {isSeparated(project) ? " · stems ready" : ""}
+              </small>
             </button>
           ))}
-          {!projects.length && (
-            <p className="empty-sidebar">Your sessions will land here.</p>
-          )}
-        </div>
-        <div className="sidebar-bottom">
-          <span className="offline-dot" />
-          Local mode<span className="version">v0.1 preview</span>
-        </div>
+          {!projects.length && <p className="muted">No songs yet.</p>}
+        </nav>
+        <p className="device" title={runtime.deviceName ?? undefined}>
+          {`Running on ${(runtime.device ?? "cpu").toUpperCase()}`}
+        </p>
       </aside>
 
-      <main className="main-content">
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">Stem separation / session desk</p>
-            <h1>{active ? active.title : "A quieter way to split sound."}</h1>
-          </div>
-          <div className="top-actions">
-            <span className="hardware-badge">
-              <span className="status-dot" />
-              CPU preview engine
-            </span>
-            <button
-              className="icon-button"
-              type="button"
-              aria-label="Open settings"
-            >
-              ⚙
-            </button>
-          </div>
-        </header>
+      <main className="main">
         {error && (
           <div className="alert" role="alert">
-            <strong>Couldn’t complete that action.</strong>
             <span>{error}</span>
             <button
               type="button"
+              className="button ghost"
               onClick={() => setError(null)}
-              aria-label="Dismiss error"
             >
-              ×
+              Dismiss
             </button>
           </div>
         )}
-        {!active ? (
-          <div className="welcome">
-            <ImportPanel onImport={importPath} disabled={false} />
-            <div className="welcome-notes">
+
+        {/* Stays mounted, so a YouTube download survives opening another song. */}
+        <div hidden={!!active}>
+          <SourcePanel
+            onImport={(path) => void importPath(path)}
+            onImported={(id) =>
+              void refresh().then(() => setActiveId((current) => current ?? id))
+            }
+          />
+        </div>
+        {active && (
+          <>
+            <header className="song-header">
               <div>
-                <span>01</span>
-                <strong>Inspect</strong>
-                <p>See the source timeline before any work starts.</p>
-              </div>
-              <div>
-                <span>02</span>
-                <strong>Separate</strong>
-                <p>A queued job keeps the UI free while it works.</p>
-              </div>
-              <div>
-                <span>03</span>
-                <strong>Shape</strong>
-                <p>Audition each lane, then export an atomic set.</p>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="workspace">
-            <section className="session-header">
-              <div>
-                <p className="eyebrow">Source signal</p>
-                <div className="source-meta">
-                  <span className="file-badge">WAV</span>
-                  <span>{formatTime(active.source.durationSeconds)}</span>
-                  <span>{active.source.sampleRate.toLocaleString()} Hz</span>
-                  <span>{active.source.channels} ch</span>
-                  <span>{formatBytes(active.source.bytes)}</span>
-                </div>
-              </div>
-              <div className="session-actions">
-                <button
-                  className="button ghost"
-                  type="button"
-                  onClick={() => void importPath(active.originalPath)}
-                >
-                  Re-import
-                </button>
-                <button
-                  className="button ghost danger-text"
-                  type="button"
-                  onClick={() => {
-                    void window.riggedAudio
-                      .deleteProject(active.id)
-                      .then(refresh);
-                  }}
-                >
-                  Remove
-                </button>
-              </div>
-            </section>
-            <div className="control-deck">
-              <div>
-                <span className="eyebrow">Engine route</span>
-                <h2>Rigged preview bands</h2>
+                <h1>{active.title}</h1>
                 <p className="muted">
-                  A deterministic four-lane preview for validating your
-                  workflow. Real model adapters plug into this same seam.
+                  {formatTime(duration)} ·{" "}
+                  {active.source.sampleRate.toLocaleString()} Hz ·{" "}
+                  {active.source.channels === 1 ? "mono" : "stereo"}
                 </p>
               </div>
-              <div className="deck-right">
-                <StatusPill state={status.state} />
-                {status.state === "complete" ? (
-                  <button
-                    className="button primary"
-                    type="button"
-                    onClick={() =>
-                      void window.riggedAudio.exportProject(active.id)
-                    }
-                  >
-                    Export stems <span aria-hidden="true">↓</span>
-                  </button>
-                ) : status.state === "idle" ||
-                  status.state === "failed" ||
-                  status.state === "interrupted" ? (
-                  <button
-                    className="button primary"
-                    type="button"
-                    onClick={() => void splitAgain()}
-                  >
-                    Run separation <span aria-hidden="true">→</span>
-                  </button>
-                ) : (
-                  <button
-                    className="button ghost"
-                    type="button"
-                    onClick={() => {
-                      const jobId = [...active.jobIds].pop();
-                      if (jobId) void window.riggedAudio.cancelJob(jobId);
-                    }}
-                  >
-                    Cancel
-                  </button>
-                )}
-              </div>
-            </div>
-            {status.state !== "idle" && status.state !== "complete" && (
-              <div
-                className="progress-track"
-                aria-label={`Separation ${status.progress}%`}
+              <button
+                className="button ghost danger"
+                type="button"
+                onClick={() => {
+                  window.riggedAudio
+                    .deleteProject(active.id)
+                    .then(() => {
+                      setActiveId(null);
+                      return refresh();
+                    })
+                    .catch((reason) => setError(errorText(reason)));
+                }}
               >
-                <div style={{ width: `${status.progress}%` }} />
-                <span>{status.message || "Working…"}</span>
-                <b>{status.progress}%</b>
-              </div>
-            )}
-            {status.state === "complete" && (
-              <section className="player-card">
-                <div className="transport-row">
+                Remove
+              </button>
+            </header>
+
+            {!separated ? (
+              <Separate
+                project={active}
+                job={job}
+                onStart={() => void separate()}
+              />
+            ) : (
+              <>
+                {active.videoPath && (
+                  <video
+                    ref={video}
+                    className="stage"
+                    src={mediaUrl(active.id, "video")}
+                    muted
+                    aria-label="Video, synced to the mix"
+                  />
+                )}
+                <section className="transport" aria-label="Transport">
                   <button
-                    className="play-button"
+                    className="play"
                     type="button"
+                    disabled={loading}
+                    aria-label={playing ? "Pause" : "Play"}
                     onClick={togglePlay}
-                    disabled={loadingAudio}
-                    aria-label={playing ? "Pause stems" : "Play stems"}
                   >
-                    {playing ? "Ⅱ" : "▶"}
+                    {playing ? "❚❚" : "▶"}
                   </button>
-                  <button
-                    className="skip-button"
-                    type="button"
-                    onClick={() => seek(position - 5)}
-                    aria-label="Back five seconds"
-                  >
-                    −5
-                  </button>
-                  <button
-                    className="skip-button"
-                    type="button"
-                    onClick={() => seek(position + 5)}
-                    aria-label="Forward five seconds"
-                  >
-                    +5
-                  </button>
-                  <div className="time-readout">
+                  <div className="time">
                     <strong>{formatTime(position)}</strong>
-                    <span>
-                      /{" "}
-                      {formatTime(
-                        mixer.current.duration() ||
-                          active.source.durationSeconds,
-                      )}
-                    </span>
+                    <span> / {formatTime(duration)}</span>
                   </div>
-                  <button
-                    className="preset"
-                    type="button"
-                    onClick={() => {
-                      const next = {
-                        ...active.mix,
-                        lanes: Object.fromEntries(
-                          STEMS.map((id) => [
-                            id,
-                            {
-                              ...laneFor(active, id),
-                              muted: false,
-                              solo: false,
-                            },
-                          ]),
-                        ),
-                      };
-                      updateProject({ ...active, mix: next });
-                      mixer.current.applyMix(next);
-                      void window.riggedAudio.updateMix(active.id, next);
-                    }}
-                  >
-                    All stems
-                  </button>
-                  <span className="loaded-label">
-                    {loadingAudio ? "Loading audio…" : "Synced mix clock"}
-                  </span>
-                </div>
-                <div className="transport-line">
-                  <div
-                    className="transport-progress"
-                    style={{
-                      width: `${(position / Math.max(1, mixer.current.duration() || active.source.durationSeconds)) * 100}%`,
-                    }}
-                  />
-                  <input
-                    type="range"
-                    min="0"
-                    max={
-                      mixer.current.duration() || active.source.durationSeconds
-                    }
-                    step="0.01"
-                    value={Math.min(
-                      position,
-                      mixer.current.duration() || active.source.durationSeconds,
-                    )}
-                    onChange={(event) => seek(Number(event.target.value))}
-                    aria-label="Seek master timeline"
-                  />
-                </div>
-              </section>
-            )}
-            <section className="lane-stack">
-              <div className="lane-stack-header">
-                <div>
-                  <p className="eyebrow">Stem lanes</p>
-                  <h2>
-                    {status.state === "complete"
-                      ? "Shape the balance."
-                      : "Your lanes will appear here."}
-                  </h2>
-                </div>
-                <span className="lane-count">{STEMS.length} targets</span>
-              </div>
-              {STEMS.map((id) => (
-                <StemLane
-                  key={id}
-                  id={id}
+                  <div className="presets" role="group" aria-label="Presets">
+                    {(Object.keys(PRESETS) as PresetId[]).map((id) => (
+                      <button
+                        key={id}
+                        type="button"
+                        className={preset === id ? "active" : ""}
+                        aria-pressed={preset === id}
+                        onClick={() => setMix(applyPreset(active.mix, id))}
+                      >
+                        {PRESETS[id].label}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="master">
+                    Master
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={active.mix.master}
+                      onChange={(event) =>
+                        setMix({
+                          ...active.mix,
+                          master: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </label>
+                </section>
+                {loading && (
+                  <p className="muted" role="status">
+                    Loading stems
+                  </p>
+                )}
+                <section className="lanes" aria-label="Stems">
+                  {STEMS.map((id, index) => (
+                    <StemLane
+                      key={id}
+                      id={id}
+                      index={index}
+                      lane={laneFor(active, id)}
+                      buffer={buffers[id]}
+                      position={position}
+                      duration={duration}
+                      auditioning={audition === id}
+                      onSeek={seek}
+                      onChange={(lane) => setLane(id, lane)}
+                      onAudition={() => toggleAudition(id)}
+                    />
+                  ))}
+                </section>
+                <p className="shortcuts">
+                  Space plays and pauses. Left and right skip 5 seconds. 1 to 6
+                  mute a stem.
+                </p>
+                <ExportPanel
+                  key={active.id}
                   project={active}
-                  buffer={buffers[id]}
-                  position={position}
-                  onSeek={seek}
-                  onChange={(lane) => setLane(id, lane)}
-                  onMute={() =>
-                    setLane(id, {
-                      ...laneFor(active, id),
-                      muted: !laneFor(active, id).muted,
-                    })
-                  }
-                  onSolo={() =>
-                    setLane(id, {
-                      ...laneFor(active, id),
-                      solo: !laneFor(active, id).solo,
-                    })
-                  }
+                  beforeExport={flushSave}
                 />
-              ))}
-            </section>
-          </div>
+              </>
+            )}
+          </>
         )}
-        {!active && (
-          <footer className="footer-note">
-            Designed for local files first. Model downloads, GPU backends, and
-            broader codecs stay behind verified capability checks.
-          </footer>
+        {importing && (
+          <p className="muted" role="status">
+            Importing
+          </p>
         )}
       </main>
     </div>

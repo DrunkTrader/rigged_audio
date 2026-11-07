@@ -1,4 +1,11 @@
-export const STEMS = ["vocals", "drums", "bass", "other"] as const;
+export const STEMS = [
+  "vocals",
+  "drums",
+  "bass",
+  "guitar",
+  "piano",
+  "other",
+] as const;
 export type StemId = (typeof STEMS)[number];
 
 export type JobState =
@@ -49,6 +56,8 @@ export interface ProjectRecord {
     master: number;
     lanes: Partial<Record<StemId, MixLane>>;
   };
+  videoPath?: string;
+  sourceUrl?: string;
 }
 
 export interface JobError {
@@ -63,6 +72,7 @@ export interface JobRecord {
   state: JobState;
   phase: string;
   progress: number;
+  message?: string;
   engineId: string;
   engineVersion: string;
   configHash: string;
@@ -86,6 +96,7 @@ export interface SeparationRequest {
   outputDirectory: string;
   requestedStems: StemId[];
   configHash: string;
+  source: AudioMetadata;
 }
 
 export interface EngineDescriptor {
@@ -93,11 +104,7 @@ export interface EngineDescriptor {
   version: string;
   label: string;
   supportedStems: StemId[];
-  supportedFormats: string[];
-  devices: string[];
-  precisions: string[];
   license: string;
-  mode: "mock" | "python";
 }
 
 export interface SeparationProgress {
@@ -116,20 +123,71 @@ export type JobEvent =
       data: { projectId: string; jobId: string; error: JobError };
     };
 
+export interface RuntimeStatus {
+  ready: boolean;
+  supported: boolean;
+  device: string | null;
+  deviceName: string | null;
+  torch: string | null;
+  cpu: string;
+  memoryBytes: number;
+  diskFreeBytes: number;
+  gpuHint: string | null;
+}
+
+export interface SetupEvent {
+  step:
+    "tools" | "python" | "packages" | "model" | "verify" | "done" | "failed";
+  message: string;
+}
+
+export interface YouTubeResult {
+  id: string;
+  title: string;
+  channel: string;
+  durationSeconds: number | null;
+  thumbnail: string;
+}
+
+export interface YouTubeProgress {
+  progress: number;
+  message: string;
+}
+
+export type BitDepth = 16 | 24 | 32;
+
+export interface ExportOptions {
+  stems: StemId[];
+  mix: boolean;
+  bitDepth: BitDepth;
+  sampleRate: "source" | 44100 | 48000;
+}
+
 export interface RiggedAudioApi {
   pickAudio(): Promise<string | null>;
   pathForFile(file: File): string;
   importAudio(path: string): Promise<ProjectRecord>;
   listProjects(): Promise<ProjectRecord[]>;
-  getProject(projectId: string): Promise<ProjectRecord | null>;
+  listJobs(): Promise<JobRecord[]>;
   startSeparation(projectId: string): Promise<{ jobId: string }>;
   cancelJob(jobId: string): Promise<void>;
-  readStems(projectId: string): Promise<Partial<Record<StemId, Uint8Array>>>;
-  exportProject(projectId: string): Promise<{ saved: boolean; path?: string }>;
+  exportProject(
+    projectId: string,
+    options: ExportOptions,
+  ): Promise<{ saved: boolean; path?: string }>;
   deleteProject(projectId: string): Promise<void>;
   updateMix(
     projectId: string,
     mix: ProjectRecord["mix"],
   ): Promise<ProjectRecord>;
+  runtimeStatus(): Promise<RuntimeStatus>;
+  installRuntime(): Promise<void>;
+  cancelInstall(): Promise<void>;
+  searchYouTube(query: string): Promise<YouTubeResult[]>;
+  importYouTube(urlOrId: string): Promise<ProjectRecord>;
+  cancelYouTube(): Promise<void>;
+  updateYouTubeSupport(): Promise<void>;
   onJobEvent(callback: (event: JobEvent) => void): () => void;
+  onSetupEvent(callback: (event: SetupEvent) => void): () => void;
+  onYouTubeProgress(callback: (event: YouTubeProgress) => void): () => void;
 }

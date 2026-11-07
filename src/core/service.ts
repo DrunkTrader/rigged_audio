@@ -1,31 +1,52 @@
-import { createHash } from "node:crypto";
-import { basename, extname, join, relative, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  basename,
+  extname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { randomUUID } from "node:crypto";
 import { JsonStore } from "./store";
-import { MockSeparationEngine, type SeparationEngine } from "./engine";
-import { sha256File, validateWav, readWav } from "./wav";
+import type { SeparationEngine } from "./engine";
+import { decodeToWav, renderMix, renderStem } from "./media";
+import { sha256File, validateWav, wavInfo } from "./wav";
 import { StructuredLogger } from "./log";
+import { laneGain } from "../shared/mix";
 import {
   STEMS,
+  type ExportOptions,
   type JobError,
   type JobEvent,
   type JobRecord,
   type ProjectRecord,
-  type SeparationProgress,
   type StemId,
 } from "../shared/types";
 
-const MAX_SOURCE_BYTES = 512 * 1024 * 1024;
+const MAX_SOURCE_BYTES = 2 * 1024 ** 3;
+// Playback decodes every stem to float in the renderer: 20 minutes is about 2.5 GB.
+const MAX_DURATION_SECONDS = 20 * 60;
+const ACTIVE_STATES = ["queued", "preparing", "separating", "validating"];
+
+export type MediaKind = StemId | "source" | "video";
+
+export interface ImportExtras {
+  title?: string;
+  videoPath?: string;
+  sourceUrl?: string;
+  signal?: AbortSignal;
+}
 
 function safeId(value: string, label: string): string {
   if (!/^[a-zA-Z0-9_-]+$/.test(value))
@@ -33,16 +54,23 @@ function safeId(value: string, label: string): string {
   return value;
 }
 
-function configHash(): string {
+function configHash(engine: SeparationEngine): string {
+  const { id, version } = engine.descriptor;
   return createHash("sha256")
-    .update(
-      JSON.stringify({
-        engine: "rigged.mock.bands",
-        version: "1.0.0",
-        stems: STEMS,
-      }),
-    )
+    .update(JSON.stringify({ engine: id, version, stems: STEMS }))
     .digest("hex");
+}
+
+function fileTitle(title: string): string {
+  const safe = title
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, "-")
+    .replace(/[. ]+$/, "")
+    .slice(0, 100);
+  return safe || "rigged-audio";
+}
+
+function stemLabel(stem: StemId): string {
+  return stem[0].toUpperCase() + stem.slice(1);
 }
 
 function errorFor(error: unknown): JobError {
@@ -60,20 +88,22 @@ function errorFor(error: unknown): JobError {
 export class RiggedAudioService {
   private readonly store: JsonStore;
   private readonly projectsDirectory: string;
-  private readonly engines: SeparationEngine[];
   private readonly logger: StructuredLogger;
   private readonly controllers = new Map<string, AbortController>();
+  private readonly runs = new Map<string, Promise<void>>();
+  private readonly imports = new Map<string, Promise<ProjectRecord>>();
+  private queue: Promise<unknown> = Promise.resolve();
   private readonly listeners = new Set<(event: JobEvent) => void>();
 
   constructor(
-    private readonly dataDirectory: string,
-    engines: SeparationEngine[] = [new MockSeparationEngine()],
+    dataDirectory: string,
+    private readonly engine: SeparationEngine,
+    private readonly ffmpeg: () => string,
   ) {
     this.store = new JsonStore(dataDirectory);
     this.logger = new StructuredLogger(dataDirectory);
     this.projectsDirectory = join(dataDirectory, "projects");
     mkdirSync(this.projectsDirectory, { recursive: true });
-    this.engines = engines;
     this.recoverInterruptedJobs();
   }
 
@@ -95,36 +125,72 @@ export class RiggedAudioService {
     );
   }
 
-  importAudio(sourcePath: string): ProjectRecord {
+  listJobs(): JobRecord[] {
+    return this.store.jobs();
+  }
+
+  async importAudio(
+    sourcePath: string,
+    extras: ImportExtras = {},
+  ): Promise<ProjectRecord> {
     const input = resolve(String(sourcePath ?? ""));
     if (!input || !existsSync(input) || !statSync(input).isFile())
       throw new Error("SOURCE_MISSING: choose a readable audio file");
-    const stat = statSync(input);
-    if (stat.size > MAX_SOURCE_BYTES)
-      throw new Error("SOURCE_TOO_LARGE: source exceeds the 512 MB MVP limit");
-    const extension = extname(input).toLowerCase();
-    if (extension !== ".wav")
-      throw new Error(
-        "FORMAT_UNSUPPORTED: the vertical slice accepts PCM WAV files",
-      );
-    const source = readWav(input).metadata;
-    const sourceSha256 = sha256File(input);
+    if (statSync(input).size > MAX_SOURCE_BYTES)
+      throw new Error("SOURCE_TOO_LARGE: source exceeds the 2 GB limit");
+    const sourceSha256 = await sha256File(input);
     const existing = this.store
       .projects()
       .find((project) => project.sourceSha256 === sourceSha256);
     if (existing) return existing;
+    // The same file twice at once would otherwise share one temp path.
+    const pending = this.imports.get(sourceSha256);
+    if (pending) return pending;
+    const work = this.createProject(input, sourceSha256, extras).finally(() =>
+      this.imports.delete(sourceSha256),
+    );
+    this.imports.set(sourceSha256, work);
+    return work;
+  }
 
+  private async createProject(
+    input: string,
+    sourceSha256: string,
+    extras: ImportExtras,
+  ): Promise<ProjectRecord> {
     const id = `project_${sourceSha256.slice(0, 16)}`;
     const directory = this.projectDirectory(id);
     mkdirSync(join(directory, "source"), { recursive: true });
     const sourcePathInProject = join(directory, "source", "source.wav");
     const tempSource = `${sourcePathInProject}.tmp`;
-    copyFileSync(input, tempSource);
-    renameSync(tempSource, sourcePathInProject);
+    let source;
+    try {
+      await decodeToWav(
+        this.ffmpeg(),
+        input,
+        tempSource,
+        MAX_DURATION_SECONDS + 1, // one over, so the check below can report it
+        extras.signal,
+      );
+      source = wavInfo(tempSource);
+      if (source.durationSeconds > MAX_DURATION_SECONDS)
+        throw new Error(
+          "SOURCE_TOO_LONG: tracks over 20 minutes are not supported yet",
+        );
+      renameSync(tempSource, sourcePathInProject);
+    } catch (error) {
+      rmSync(directory, { recursive: true, force: true });
+      throw error;
+    }
+    let videoPath: string | undefined;
+    if (extras.videoPath) {
+      videoPath = join(directory, "source", "video.mp4");
+      copyFileSync(extras.videoPath, videoPath);
+    }
     const now = new Date().toISOString();
     const project: ProjectRecord = {
       id,
-      title: basename(input, extension),
+      title: extras.title ?? basename(input, extname(input)),
       originalPath: input,
       sourcePath: sourcePathInProject,
       sourceSha256,
@@ -134,6 +200,8 @@ export class RiggedAudioService {
       jobIds: [],
       stems: {},
       mix: { master: 0.86, lanes: {} },
+      videoPath,
+      sourceUrl: extras.sourceUrl,
     };
     this.store.update((current) => ({
       ...current,
@@ -150,8 +218,15 @@ export class RiggedAudioService {
   async startSeparation(projectId: string): Promise<{ jobId: string }> {
     const project = this.getProject(projectId);
     if (!project) throw new Error("PROJECT_MISSING: project was not found");
-    const engine = this.engines[0];
-    const hash = configHash();
+    const engine = this.engine;
+    const running = this.store
+      .jobs()
+      .find(
+        (job) =>
+          job.projectId === projectId && ACTIVE_STATES.includes(job.state),
+      );
+    if (running) return { jobId: running.id };
+    const hash = configHash(engine);
     const existingJob = this.store
       .jobs()
       .find(
@@ -179,6 +254,7 @@ export class RiggedAudioService {
       state: "queued",
       phase: "queue",
       progress: 0,
+      message: "Waiting for the current song to finish",
       engineId: engine.descriptor.id,
       engineVersion: engine.descriptor.version,
       configHash: hash,
@@ -198,79 +274,132 @@ export class RiggedAudioService {
           : item,
       ),
     }));
-    void this.run(record, project, engine);
+    const controller = new AbortController();
+    this.controllers.set(jobId, controller);
+    // One job at a time: two models at once fight over GPU memory and RAM.
+    const run = this.queue
+      .then(() => this.run(record, project, engine, controller))
+      .finally(() => this.runs.delete(jobId));
+    this.queue = run.catch(() => undefined);
+    this.runs.set(jobId, run);
     return { jobId };
   }
 
   async cancelJob(jobId: string): Promise<void> {
     safeId(jobId, "job_id");
     this.controllers.get(jobId)?.abort();
+    await this.runs.get(jobId);
   }
 
-  readStems(projectId: string): Partial<Record<StemId, Uint8Array>> {
+  /** Stops every worker, so quitting never leaves inference running. */
+  async shutdown(): Promise<void> {
+    for (const controller of this.controllers.values()) controller.abort();
+    await Promise.all(this.runs.values());
+  }
+
+  /** The only way a renderer URL becomes a file path. */
+  mediaPath(projectId: string, kind: string): string {
     const project = this.getProject(projectId);
     if (!project) throw new Error("PROJECT_MISSING: project was not found");
-    const result: Partial<Record<StemId, Uint8Array>> = {};
-    for (const stem of STEMS) {
-      const artifact = project.stems[stem];
-      if (artifact?.valid) {
-        const path = this.ownedPath(project.id, artifact.path);
-        if (existsSync(path)) result[stem] = new Uint8Array(readFileSync(path));
-      }
-    }
-    return result;
+    const candidate =
+      kind === "source"
+        ? project.sourcePath
+        : kind === "video"
+          ? project.videoPath
+          : project.stems[kind as StemId]?.path;
+    if (!candidate) throw new Error("OUTPUT_MISSING: media is not available");
+    return this.ownedPath(project.id, candidate);
   }
 
   async exportProject(
     projectId: string,
     destination: string,
+    options: ExportOptions,
   ): Promise<{ saved: boolean; path?: string }> {
     const project = this.getProject(projectId);
     if (!project) throw new Error("PROJECT_MISSING: project was not found");
-    const folder = resolve(destination);
-    mkdirSync(folder, { recursive: true });
-    const output = join(
-      folder,
-      project.title.replace(/[\\/:*?"<>|]/g, "-").slice(0, 100) ||
-        "rigged-audio",
-    );
-    mkdirSync(output, { recursive: true });
-    const files: string[] = [];
-    for (const stem of STEMS) {
+    const stems = STEMS.filter((stem) => options.stems?.includes(stem));
+    const bitDepth = options.bitDepth;
+    if (![16, 24, 32].includes(bitDepth))
+      throw new Error("EXPORT_INVALID: unsupported bit depth");
+    if (!["source", 44100, 48000].includes(options.sampleRate))
+      throw new Error("EXPORT_INVALID: unsupported sample rate");
+    if (!stems.length && !options.mix)
+      throw new Error("EXPORT_INVALID: choose something to export");
+    const rate =
+      options.sampleRate === "source"
+        ? project.source.sampleRate
+        : options.sampleRate;
+    const stemPath = (stem: StemId): string => {
       const artifact = project.stems[stem];
-      if (!artifact?.valid)
+      const path = artifact?.valid
+        ? this.ownedPath(project.id, artifact.path)
+        : null;
+      if (!path || !existsSync(path))
         throw new Error(`OUTPUT_MISSING: ${stem} is not available`);
-      const sourcePath = this.ownedPath(project.id, artifact.path);
-      if (!existsSync(sourcePath))
-        throw new Error(`OUTPUT_MISSING: ${stem} is not available`);
-      const destinationPath = join(output, `${stem}.wav`);
-      const tempPath = `${destinationPath}.tmp`;
-      copyFileSync(sourcePath, tempPath);
-      renameSync(tempPath, destinationPath);
-      files.push(destinationPath);
+      return path;
+    };
+    const mixLanes = STEMS.map((stem) => ({
+      stem,
+      gain: laneGain(project.mix, stem),
+    })).filter((lane) => lane.gain > 0);
+    if (options.mix && !mixLanes.length)
+      throw new Error("EXPORT_INVALID: every stem is muted in this mix");
+    const title = fileTitle(project.title);
+    const output = join(resolve(destination), `${title} stems`);
+    mkdirSync(output, { recursive: true });
+    const ffmpeg = this.ffmpeg();
+    const files: string[] = [];
+    const write = async (
+      name: string,
+      render: (temporary: string) => Promise<void>,
+    ): Promise<void> => {
+      const path = join(output, `${title} - ${name}.wav`);
+      const temporary = `${path}.tmp`;
+      try {
+        await render(temporary);
+        renameSync(temporary, path);
+      } finally {
+        rmSync(temporary, { force: true });
+      }
+      files.push(path);
+    };
+    for (const stem of stems)
+      await write(stemLabel(stem), (temporary) =>
+        renderStem(ffmpeg, stemPath(stem), temporary, bitDepth, rate),
+      );
+    if (options.mix) {
+      await write("Mix", (temporary) =>
+        renderMix(
+          ffmpeg,
+          mixLanes.map(({ stem, gain }) => ({ path: stemPath(stem), gain })),
+          project.mix.master,
+          temporary,
+          bitDepth,
+          rate,
+        ),
+      );
     }
     const manifest = {
       projectId,
       title: project.title,
       source: project.source,
-      engine: "rigged.mock.bands@1.0.0",
+      engine: `${this.engine.descriptor.id}@${this.engine.descriptor.version}`,
+      bitDepth,
+      sampleRate: rate,
       exportedAt: new Date().toISOString(),
       files: files.map((file) => relative(output, file)),
     };
-    writeFileSync(
-      join(output, "manifest.json.tmp"),
-      JSON.stringify(manifest, null, 2),
-    );
-    renameSync(
-      join(output, "manifest.json.tmp"),
-      join(output, "manifest.json"),
-    );
+    const manifestPath = join(output, "manifest.json");
+    writeFileSync(`${manifestPath}.tmp`, JSON.stringify(manifest, null, 2));
+    renameSync(`${manifestPath}.tmp`, manifestPath);
     return { saved: true, path: output };
   }
 
-  deleteProject(projectId: string): void {
+  async deleteProject(projectId: string): Promise<void> {
     const project = this.getProject(projectId);
     if (!project) return;
+    await Promise.all(project.jobIds.map((jobId) => this.cancelJob(jobId)));
     rmSync(this.projectDirectory(projectId), { recursive: true, force: true });
     this.store.update((current) => ({
       ...current,
@@ -300,15 +429,16 @@ export class RiggedAudioService {
     record: JobRecord,
     project: ProjectRecord,
     engine: SeparationEngine,
+    controller: AbortController,
   ): Promise<void> {
-    const controller = new AbortController();
-    this.controllers.set(record.id, controller);
     const temporary = join(
       this.projectDirectory(project.id),
       "artifacts",
       `.tmp-${record.id}`,
     );
     try {
+      if (controller.signal.aborted)
+        throw new Error("CANCELED: canceled while waiting");
       this.updateJob(record.id, {
         state: "preparing",
         phase: "prepare",
@@ -334,6 +464,7 @@ export class RiggedAudioService {
         outputDirectory: temporary,
         requestedStems: record.requestedStems,
         configHash: record.configHash,
+        source: project.source,
       };
       const names = await engine.separate(
         request,
@@ -342,6 +473,7 @@ export class RiggedAudioService {
             state: progress.state,
             phase: progress.phase,
             progress: progress.progress,
+            message: progress.message,
           });
           this.emit({
             kind: "progress",
@@ -375,13 +507,15 @@ export class RiggedAudioService {
             {
               id: name,
               path,
-              metadata: readWav(path).metadata,
-              sha256: sha256File(path),
+              sha256: "",
+              metadata: wavInfo(path),
               valid: true,
             },
           ];
         }),
       ) as ProjectRecord["stems"];
+      for (const artifact of Object.values(artifacts))
+        artifact.sha256 = await sha256File(artifact.path);
       const manifest = {
         schemaVersion: 1,
         jobId: record.id,
@@ -501,8 +635,9 @@ export class RiggedAudioService {
   private ownedPath(projectId: string, candidate: string): string {
     const root = resolve(this.projectDirectory(projectId));
     const path = resolve(candidate);
-    const outside = relative(root, path).startsWith("..");
-    if (outside)
+    const inside = relative(root, path);
+    // isAbsolute catches another Windows drive, where relative() cannot use "..".
+    if (inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside))
       throw new Error(
         "PATH_REJECTED: artifact is outside the project directory",
       );
@@ -510,17 +645,19 @@ export class RiggedAudioService {
   }
 
   private recoverInterruptedJobs(): void {
-    const jobs = this.store.jobs();
-    if (
-      !jobs.some((job) =>
-        ["queued", "preparing", "separating", "validating"].includes(job.state),
-      )
-    )
+    for (const project of this.store.projects()) {
+      const artifacts = join(this.projectDirectory(project.id), "artifacts");
+      if (!existsSync(artifacts)) continue;
+      for (const entry of readdirSync(artifacts))
+        if (entry.startsWith(".tmp-"))
+          rmSync(join(artifacts, entry), { recursive: true, force: true });
+    }
+    if (!this.store.jobs().some((job) => ACTIVE_STATES.includes(job.state)))
       return;
     this.store.update((current) => ({
       ...current,
       jobs: current.jobs.map((job) =>
-        ["queued", "preparing", "separating", "validating"].includes(job.state)
+        ACTIVE_STATES.includes(job.state)
           ? {
               ...job,
               state: "interrupted",

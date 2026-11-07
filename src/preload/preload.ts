@@ -4,7 +4,12 @@ import {
   webUtils,
   type IpcRendererEvent,
 } from "electron";
-import type { JobEvent, ProjectRecord, RiggedAudioApi } from "../shared/types";
+import type {
+  JobEvent,
+  RiggedAudioApi,
+  SetupEvent,
+  YouTubeProgress,
+} from "../shared/types";
 
 function subscribe<T>(
   channel: string,
@@ -21,15 +26,25 @@ const api: RiggedAudioApi = {
   pathForFile: (file) => webUtils.getPathForFile(file),
   importAudio: (path) => ipcRenderer.invoke("library:import", path),
   listProjects: () => ipcRenderer.invoke("library:list"),
-  getProject: (projectId) => ipcRenderer.invoke("library:get", projectId),
+  listJobs: () => ipcRenderer.invoke("library:jobs"),
   startSeparation: (projectId) => ipcRenderer.invoke("job:start", projectId),
   cancelJob: (jobId) => ipcRenderer.invoke("job:cancel", jobId),
-  readStems: (projectId) => ipcRenderer.invoke("stems:read", projectId),
-  exportProject: (projectId) => ipcRenderer.invoke("project:export", projectId),
+  exportProject: (projectId, options) =>
+    ipcRenderer.invoke("project:export", projectId, options),
   deleteProject: (projectId) => ipcRenderer.invoke("project:delete", projectId),
   updateMix: (projectId, mix) =>
     ipcRenderer.invoke("project:mix", projectId, mix),
+  runtimeStatus: () => ipcRenderer.invoke("runtime:status"),
+  installRuntime: () => ipcRenderer.invoke("runtime:install"),
+  cancelInstall: () => ipcRenderer.invoke("runtime:cancel"),
+  searchYouTube: (query) => ipcRenderer.invoke("youtube:search", query),
+  importYouTube: (urlOrId) => ipcRenderer.invoke("youtube:import", urlOrId),
+  cancelYouTube: () => ipcRenderer.invoke("youtube:cancel"),
+  updateYouTubeSupport: () => ipcRenderer.invoke("youtube:update"),
   onJobEvent: (callback) => subscribe<JobEvent>("job:event", callback),
+  onSetupEvent: (callback) => subscribe<SetupEvent>("setup:event", callback),
+  onYouTubeProgress: (callback) =>
+    subscribe<YouTubeProgress>("youtube:progress", callback),
 };
 
 contextBridge.exposeInMainWorld("riggedAudio", api);
