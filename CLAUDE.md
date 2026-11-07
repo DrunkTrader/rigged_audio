@@ -12,9 +12,10 @@ npm run build              # tsc -p tsconfig.node.json -> dist-electron/, then v
 npm run dev                # build + `electron .` (no HMR; rebuild to see changes)
 npm run format:check       # prettier
 npm run dist:linux|dist:win|dist:mac   # electron-builder + SHA256SUMS (see README)
+npm run release:check -- --artifacts   # versions agree; installers, checksums and packaged contents are right
 ```
 
-CI runs `npm ci`, `typecheck`, `test`, `build`. Set `RIGGED_AUDIO_DATA_DIR=/tmp/x` to run the app against a throwaway data directory.
+CI runs `npm ci`, `typecheck`, `test`, `build` and the version check on Ubuntu, Windows and macOS. A `v*` tag runs `release.yml` (native builds, artifact checks, GitHub Release); the tag must equal `v` + `package.json` version. The user data folder is named after `package.json` `name` (`rigged-audio`), not `productName`: renaming the package would orphan users' libraries and runtimes. Set `RIGGED_AUDIO_DATA_DIR=/tmp/x` to run the app against a throwaway data directory.
 
 ## Architecture
 
