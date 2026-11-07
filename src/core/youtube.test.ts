@@ -72,10 +72,10 @@ const downloader = `
   const fs = require("fs"), path = require("path");
   const args = process.argv.slice(2);
   const output = args[args.indexOf("-o") + 1];
-  const name = output.includes("video") ? "video.mp4" : "audio.webm";
+  const name = "audio.webm";
   if (args[args.indexOf("--") + 1] !== "https://www.youtube.com/watch?v=${ID}") process.exit(9);
   if (!args.includes("--progress")) process.exit(9);
-  if (name === "video.mp4" && process.env.NO_VIDEO) process.exit(1);
+  if (args[args.indexOf("-f") + 1] !== "bestaudio/best") process.exit(9);
   console.log("TITLE A Song");
   console.log("PCT  50.0%");
   fs.writeFileSync(path.join(path.dirname(output), name), "media");
@@ -91,7 +91,7 @@ describe("YouTubeClient", () => {
     expect(result.title).toBe("ytsearch12:--exec evil");
   });
 
-  it("downloads audio and video, scaling progress across both", async () => {
+  it("downloads only the best audio stream, with progress", async () => {
     const events: number[] = [];
     const result = await tool(downloader).download(
       ID,
@@ -100,27 +100,11 @@ describe("YouTubeClient", () => {
       (event) => events.push(event.progress),
       new AbortController().signal,
     );
-    expect(result.title).toBe("A Song");
-    expect(result.audio).toMatch(/audio\.webm$/);
-    expect(result.video).toMatch(/video\.mp4$/);
-    expect(events).toEqual([40, 90]);
-  });
-
-  it("still succeeds when only the preview video fails", async () => {
-    process.env.NO_VIDEO = "1";
-    try {
-      const result = await tool(downloader).download(
-        ID,
-        tempDirectory(),
-        "ffmpeg",
-        () => undefined,
-        new AbortController().signal,
-      );
-      expect(result.audio).toBeTruthy();
-      expect(result.video).toBeUndefined();
-    } finally {
-      delete process.env.NO_VIDEO;
-    }
+    expect(result).toEqual({
+      audio: expect.stringMatching(/audio\.webm$/),
+      title: "A Song",
+    });
+    expect(events).toEqual([50]);
   });
 
   it("surfaces a refused download", async () => {

@@ -1,4 +1,13 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  nativeTheme,
+  protocol,
+  session,
+  shell,
+} from "electron";
 import { createReadStream, mkdirSync, rmSync, statSync } from "node:fs";
 import { extname, join } from "node:path";
 import { Readable } from "node:stream";
@@ -52,12 +61,23 @@ function send(channel: string, value: unknown): void {
   windowRef?.webContents.send(channel, value);
 }
 
-const MIME: Record<string, string> = {
-  ".wav": "audio/wav",
-  ".mp4": "video/mp4",
-};
+const MIME: Record<string, string> = { ".wav": "audio/wav" };
 
-/** Streams project media with Range support, so stems never cross IPC and video can seek. */
+/** YouTube refuses embeds without a Referer (error 153), and file:// pages send none. */
+function identifyEmbeds(): void {
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: ["https://www.youtube-nocookie.com/embed/*"] },
+    (details, callback) =>
+      callback({
+        requestHeaders: {
+          ...details.requestHeaders,
+          Referer: "https://com.riggedaudio.desktop/",
+        },
+      }),
+  );
+}
+
+/** Streams project media with Range support, so stems never cross IPC. */
 function serveMedia(request: Request): Response {
   const url = new URL(request.url);
   const [projectId, kind] = url.pathname.split("/").filter(Boolean);
@@ -87,8 +107,10 @@ function createWindow(): void {
     height: 920,
     minWidth: 1120,
     minHeight: 720,
-    backgroundColor: "#0b0d12",
+    backgroundColor: "#09090d",
     show: false,
+    // The File/Edit menu bar clashed with the UI; Alt still shows it on Windows and Linux.
+    autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, "../preload/preload.js"),
       contextIsolation: true,
@@ -135,7 +157,7 @@ async function importYouTube(urlOrId: string): Promise<ProjectRecord> {
   const directory = join(dataDirectory(), "tmp", randomUUID());
   mkdirSync(directory, { recursive: true });
   try {
-    const { audio, video, title } = await youtube.download(
+    const { audio, title } = await youtube.download(
       id,
       directory,
       runtime.ffmpeg(),
@@ -144,7 +166,6 @@ async function importYouTube(urlOrId: string): Promise<ProjectRecord> {
     );
     return await service.importAudio(audio, {
       title,
-      videoPath: video,
       sourceUrl: `https://www.youtube.com/watch?v=${id}`,
       signal: fetching.signal,
     });
@@ -223,6 +244,10 @@ function registerIpc(): void {
   );
   ipcMain.handle("youtube:cancel", () => fetching?.abort());
   ipcMain.handle("youtube:update", () => runtime.updateYtDlp());
+  ipcMain.handle("theme:set", (_event, theme: string) => {
+    nativeTheme.themeSource = theme === "light" ? "light" : "dark";
+    windowRef?.setBackgroundColor(theme === "light" ? "#f4f1ec" : "#09090d");
+  });
 }
 
 // Startup clears temp files and the store is one file, so a second copy would corrupt a running one.
@@ -245,6 +270,7 @@ app.whenReady().then(() => {
   );
   service.onJobEvent((event: JobEvent) => send("job:event", event));
   protocol.handle("rigged-media", (request) => serveMedia(request));
+  identifyEmbeds();
   registerIpc();
   createWindow();
   app.on("activate", () => {

@@ -56,7 +56,7 @@ export interface ProjectRecord {
     master: number;
     lanes: Partial<Record<StemId, MixLane>>;
   };
-  videoPath?: string;
+  /** YouTube imports only; the video itself plays from YouTube's embedded player. */
   sourceUrl?: string;
 }
 
@@ -187,6 +187,8 @@ export interface RiggedAudioApi {
   importYouTube(urlOrId: string): Promise<ProjectRecord>;
   cancelYouTube(): Promise<void>;
   updateYouTubeSupport(): Promise<void>;
+  /** Matches the native title bar and menus to the app theme. */
+  setTheme(theme: "dark" | "light"): Promise<void>;
   onJobEvent(callback: (event: JobEvent) => void): () => void;
   onSetupEvent(callback: (event: SetupEvent) => void): () => void;
   onYouTubeProgress(callback: (event: YouTubeProgress) => void): () => void;

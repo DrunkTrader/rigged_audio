@@ -92,33 +92,28 @@ export class YouTubeClient {
     return parseSearchResults(lines.filter((line) => line.startsWith("{")));
   }
 
-  /** Fetches audio, then a small video for preview. A failed video is not fatal. */
+  /** Fetches the best audio stream only; the video plays from YouTube's own player. */
   async download(
     id: string,
     directory: string,
     ffmpeg: string,
     onProgress: (event: YouTubeProgress) => void,
     signal: AbortSignal,
-  ): Promise<{ audio: string; video?: string; title: string }> {
+  ): Promise<{ audio: string; title: string }> {
     const { command, args, env } = this.tool();
     let title = id;
-    const fetch = (
-      name: string,
-      format: string,
-      from: number,
-      to: number,
-      message: string,
-    ): Promise<void> =>
-      runProcess(
+    try {
+      await runProcess(
         command,
         // prettier-ignore
         // --print implies quiet mode, which would hide progress without --progress
         [...args, "--no-playlist", "--newline", "--no-simulate", "--progress",
-         "--match-filter", "duration<=?1200", "--merge-output-format", "mp4",
+         "--match-filter", "duration<=?1200",
          "--print", "before_dl:TITLE %(title)s",
          "--progress-template", "download:PCT %(progress._percent_str)s",
-         "--ffmpeg-location", ffmpeg, "-f", format,
-         "-o", join(directory, `${name}.%(ext)s`),
+         // Highest bitrate audio-only stream, kept as-is: ffmpeg decodes it once on import.
+         "--ffmpeg-location", ffmpeg, "-f", "bestaudio/best", "-S", "abr",
+         "-o", join(directory, "audio.%(ext)s"),
          "--", `https://www.youtube.com/watch?v=${id}`],
         {
           env,
@@ -127,47 +122,23 @@ export class YouTubeClient {
             const percent = line.match(/^PCT\s+([\d.]+)%/);
             if (percent)
               onProgress({
-                progress: Math.round(
-                  from + (Number(percent[1]) / 100) * (to - from),
-                ),
-                message,
+                progress: Math.round(Number(percent[1])),
+                message: "Downloading audio",
               });
             else if (line.startsWith("TITLE ")) title = line.slice(6);
           },
         },
       );
-    const find = (name: string): string | undefined => {
-      const file = readdirSync(directory).find((item) =>
-        item.startsWith(`${name}.`),
-      );
-      return file && !file.endsWith(".part")
-        ? join(directory, file)
-        : undefined;
-    };
-
-    try {
-      await fetch("audio", "bestaudio/best", 0, 80, "Downloading audio");
     } catch (error) {
       throw youTubeError(error);
     }
-    const audio = find("audio");
-    if (!audio)
+    const file = readdirSync(directory).find(
+      (item) => item.startsWith("audio.") && !item.endsWith(".part"),
+    );
+    if (!file)
       throw new Error(
         "YOUTUBE_FAILED: nothing was downloaded. Videos over 20 minutes are not supported.",
       );
-    try {
-      await fetch(
-        "video",
-        // 480p streams are usually video-only, so merge audio for the preview player.
-        "bv*[height<=480][ext=mp4]+ba[ext=m4a]/b[height<=480][ext=mp4]",
-        80,
-        100,
-        "Downloading video preview",
-      );
-    } catch (error) {
-      if (signal.aborted) throw error;
-      return { audio, title };
-    }
-    return { audio, video: find("video"), title };
+    return { audio: join(directory, file), title };
   }
 }

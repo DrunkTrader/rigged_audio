@@ -101,22 +101,39 @@ def run_model(model, mix, device, on_progress):
     )[0]
 
 
-def exit_with_parent():
-    """The app holds stdin open, so EOF means it died, even if it was force-killed."""
+def exit_with_parent(parent_pid):
+    """Exits when the app dies, even if it was force-killed."""
+    if sys.platform == "win32":
+        # A thread blocked reading a Windows pipe can stall other I/O on it, which
+        # froze jobs before their first message, so wait on the app process instead.
+        if not parent_pid:
+            return
+        import ctypes
 
-    def wait():
-        sys.stdin.read()
-        os._exit(1)
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x00100000, False, parent_pid)  # SYNCHRONIZE
+        if not handle:
+            os._exit(1)  # the app is already gone
+
+        def wait():
+            kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)
+            os._exit(1)
+
+    else:
+        # The app holds stdin open, so EOF means it died.
+        def wait():
+            sys.stdin.read()
+            os._exit(1)
 
     threading.Thread(target=wait, daemon=True).start()
 
 
 def separate(args):
-    exit_with_parent()
+    exit_with_parent(args.parent_pid)
+    emit(kind="progress", progress=2, message="Loading the AI model")
     import torch
     from demucs.pretrained import get_model
 
-    emit(kind="progress", progress=2, message="Loading the AI model")
     model = get_model(MODEL)
     model.eval()
 
@@ -183,6 +200,7 @@ def main():
     parser.add_argument("--rate", type=int)
     parser.add_argument("--channels", type=int)
     parser.add_argument("--frames", type=int)
+    parser.add_argument("--parent-pid", type=int)
     args = parser.parse_args()
     try:
         {"probe": probe, "prefetch": prefetch}.get(
